@@ -101,6 +101,7 @@ def parse_code_string(
         parent_id=None,
         file_path=file_path,
         repo_url=repo_url,
+        content= f"Docstring: {mod_doc}\nImports: {mod_imports}",
         docstring=mod_doc,
         imports=mod_imports,
         line_range=(1, len(source_lines)),

@@ -2,6 +2,8 @@ import jwt
 import time
 import requests
 import base64
+import io
+import tarfile
 
 class GitHubClient:
     def __init__(self, app_id: str, pem_path: str):
@@ -13,10 +15,11 @@ class GitHubClient:
 
     def _generate_jwt(self) -> str:
         """Generates the Master Key (JWT) valid for 10 minutes."""
+        now = int(time.time())
         payload = {
-            'iat': int(time.time()),
-            'exp': int(time.time()) + (10 * 60),
-            'iss': self.app_id
+            "iat": now - 60, 
+            "exp": now + 540, 
+            "iss": self.app_id
         }
         return jwt.encode(payload, self.signing_key, algorithm='RS256')        
     
@@ -65,25 +68,44 @@ class GitHubClient:
         else:
             raise Exception(f"Failed to fetch {file_path}: {response.text}")
         
-if __name__ == "__main__":
-    # 1. Put your actual App ID here (From the top of your GitHub App settings page)
-    APP_ID = "3338188" 
-    
-    # 2. Put the exact name of the .pem file you downloaded here
-    PEM_FILE = "aria-dev-ynikh.2026-04-10.private-key.pem" 
-    
-    # 3. Put your GitHub Username and the repository name
-    OWNER = "NIKHIL-evan"
-    REPO = "ARIA"
-    
-    # 4. We will try to download the server.py file we just wrote
-    TARGET_FILE = "server.py" 
+    def get_repo_content(self, owner:str, repo: str) -> str:
+        """downloads the whole repo archive(tar)"""
+        token = self.get_installation_token(owner, repo)
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json"
+        }
 
-    print("Initializing GitHub Client...")
-    client = GitHubClient(app_id=APP_ID, pem_path=PEM_FILE)
-    
-    print(f"Requesting file: {TARGET_FILE}...")
-    content = client.get_file_content(owner=OWNER, repo=REPO, file_path=TARGET_FILE)
-    
-    print("\n--- FILE DOWNLOAD SUCCESSFUL ---")
-    print(content[:200] + "\n...[TRUNCATED]")
+        url = f"https://api.github.com/repos/{owner}/{repo}/tarball/main"
+        response = requests.get(url, headers=headers)
+
+        if response.status_code == 200:
+            virtual_file = io.BytesIO(response.content)
+                
+                # 2. Open the archive
+            repo_files = {} # This is the dictionary we will return
+                
+            with tarfile.open(fileobj=virtual_file, mode="r:gz") as tar:
+                for member in tar.getmembers():
+                        
+                    # Only process Python files
+                    if member.name.endswith(".py"):
+                            
+                        parts = member.name.split('/', 1)
+                        clean_path = parts[1]
+                            
+                        file_object = tar.extractfile(member)
+                        if file_object is not None:
+                            code_string = file_object.read().decode('utf-8')
+                            
+                        repo_files[clean_path] = code_string
+
+            return repo_files
+        
+        else:
+            raise Exception(f"Failed to fetch repo: {response.text}")
+            
+                            
+        
+        
+            
