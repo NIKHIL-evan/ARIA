@@ -25,13 +25,60 @@ class CodeChunk(BaseModel):
     
     # --- Technical Details ---
     line_range: Tuple[int, int]        
-    language: str = "python"
-    
+
     # --- Git Metadata ---
     last_commit_hash: Optional[str] = None
     last_commit_message: Optional[str] = None
     last_commit_author: Optional[str] = None
 
+class GraphNode(BaseModel):
+    id: str
+    name: str
+    node_type: str  # "module", "class", or "function"
+    file_path: str
+    repo_url: str
+
+class GraphEdge(BaseModel):
+    source_id: str
+    target_id: Optional[str] = None   # Used when we know the exact ID (e.g., DEFINES)
+    target_name: Optional[str] = None # Used when we only know the string name (e.g., CALLS, IMPORTS)
+    relation_type: str                # "DEFINES", "CALLS", "IMPORTS", "INHERITS"
+
+
+def _resolve_call_name(node: ast.AST) -> str | None:
+    """Recursively unwraps AST nodes to get the full string name of a call."""
+    if isinstance(node, ast.Name):
+        return node.id
+        
+    elif isinstance(node, ast.Attribute):
+        base_name = _resolve_call_name(node.value)
+        if base_name:
+            if base_name == "self":
+                return node.attr  # Convert 'self.sync_graph' to just 'sync_graph'
+            return f"{base_name}.{node.attr}"
+            
+    return None 
+
+def _extract_dependencies(node: ast.AST) -> tuple[list[str], list[str]]:
+    """Sweeps an AST node body to extract all function calls and imports."""
+    calls = []
+    imports = []
+    
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call):
+            call_name = _resolve_call_name(child.func)
+            if call_name:
+                calls.append(call_name)
+                
+        elif isinstance(child, ast.ImportFrom):
+            if child.module:
+                imports.append(child.module)
+                
+        elif isinstance(child, ast.Import):
+            for alias in child.names:
+                imports.append(alias.name)
+                
+    return list(set(calls)), list(set(imports))
 
 def parse_code_string(
     source_code: str,
@@ -39,12 +86,14 @@ def parse_code_string(
     repo_url: str,
     commit_message: Optional[str] = None,
     commit_author: Optional[str] = None,
-) -> List[CodeChunk]:
+) -> tuple[list[CodeChunk], list[GraphNode], list[GraphEdge]]:
     """
     Takes a raw string of Python code from memory and parses it into CodeChunks.
-    No disk access required.
     """
     chunks = []
+    graph_nodes = []
+    graph_edges = []
+
     source_lines = source_code.splitlines()
     
     try:
@@ -87,11 +136,19 @@ def parse_code_string(
         return imports
 
     # 1. MODULE LEVEL CHUNK
-    # Since we don't have Pathlib anymore, we extract the stem using standard string methods
     module_name = file_path.split('/')[-1].replace('.py', '')
     module_id = _generate_node_id(repo_url, file_path, "module", module_name)
     mod_doc = ast.get_docstring(tree) if is_parsable else source_code[:500]
     mod_imports = _extract_imports(tree) if is_parsable else None
+    global_assignments = []
+    if is_parsable:
+        for node in tree.body:
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                segment = ast.get_source_segment(source_code, node)
+                if segment:
+                    global_assignments.append(segment)
+                    
+    global_text = "\n".join(global_assignments)
     
     chunks.append(CodeChunk(
         id=module_id,
@@ -101,13 +158,25 @@ def parse_code_string(
         parent_id=None,
         file_path=file_path,
         repo_url=repo_url,
-        content= f"Docstring: {mod_doc}\nImports: {mod_imports}",
+        content= f"Docstring: {mod_doc}\nImports: {mod_imports}\nGlobal Variables:\n{global_text}",
         docstring=mod_doc,
         imports=mod_imports,
         line_range=(1, len(source_lines)),
         last_commit_message=commit_message,
         last_commit_author=commit_author
     ))
+    graph_nodes.append(GraphNode(id=module_id, name=module_name, node_type="module", file_path=file_path, repo_url=repo_url))
+    mod_calls, mod_imports = _extract_dependencies(tree)
+    for imp in mod_imports:
+        graph_edges.append(GraphEdge(
+            source_id=module_id, target_name=imp, relation_type="IMPORTS"
+        ))
+    # Create the CALLS Edges (Global instantiations)
+    for call in mod_calls:
+        graph_edges.append(GraphEdge(
+            source_id=module_id, target_name=call, relation_type="CALLS"
+        ))
+
 
     if not is_parsable:
         return chunks
@@ -158,7 +227,18 @@ def parse_code_string(
             start_index = node.lineno - 1
             end_index = node.body[0].lineno - 1 if node.body else node.end_lineno
             class_skeleton = "\n".join(source_lines[start_index:end_index])
+            graph_nodes.append(GraphNode(
+                id=class_id, name=node.name, node_type="class", file_path=file_path, repo_url=repo_url))
             
+            graph_edges.append(GraphEdge(
+                source_id=module_id, target_id=class_id, relation_type="DEFINES"))
+            
+            bases = [_resolve_call_name(b) for b in node.bases if _resolve_call_name(b)]
+            for base in bases:
+                graph_edges.append(GraphEdge(
+                    source_id=class_id, target_name=base, relation_type="INHERITS"
+                ))
+
             chunks.append(CodeChunk(
                 id=class_id,
                 content_hash=_generate_content_hash(class_skeleton.strip()),
@@ -180,10 +260,18 @@ def parse_code_string(
                 if isinstance(sub_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     method_qualified_name = f"{node.name}.{sub_node.name}"
                     method_type = "async_function" if isinstance(sub_node, ast.AsyncFunctionDef) else "function"
+                    method_id = _generate_node_id(repo_url, file_path, method_type, method_qualified_name)
                     method_content = "\n".join(source_lines[sub_node.lineno - 1 : sub_node.end_lineno])
-                    
+                    graph_nodes.append(GraphNode(id=method_id, name=method_qualified_name, node_type=method_type, file_path=file_path, repo_url=repo_url))
+
+                    graph_edges.append(GraphEdge(source_id=class_id, target_id=method_id, relation_type="DEFINES"))
+
+                    func_calls, _ = _extract_dependencies(sub_node)
+                    for calls in func_calls:
+                        graph_edges.append(GraphEdge(source_id=method_id, target_name=calls, relation_type="CALLS"))
+
                     chunks.append(CodeChunk(
-                        id=_generate_node_id(repo_url, file_path, method_type, method_qualified_name),
+                        id=method_id,
                         content_hash=_generate_content_hash(method_content),
                         name=method_qualified_name,
                         node_type=method_type,
@@ -200,11 +288,22 @@ def parse_code_string(
 
         # --- CASE 2: TOP-LEVEL FUNCTIONS ---
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            func_id = _generate_node_id(repo_url, file_path, "function", node.name)
             func_type = "async_function" if isinstance(node, ast.AsyncFunctionDef) else "function"
             func_content = "\n".join(source_lines[node.lineno - 1 : node.end_lineno])
+            func_calls, _ = _extract_dependencies(node)
+            graph_nodes.append(GraphNode(
+                id=func_id, name=node.name, node_type="function", file_path=file_path, repo_url=repo_url))
             
+            graph_edges.append(GraphEdge(
+                source_id=module_id, target_id=func_id, relation_type="DEFINES"))
+            
+            for call in func_calls:
+                graph_edges.append(GraphEdge(
+                    source_id=func_id, target_name=call, relation_type="CALLS"))
+
             chunks.append(CodeChunk(
-                id=_generate_node_id(repo_url, file_path, func_type, node.name),
+                id=func_id,
                 content_hash=_generate_content_hash(func_content),
                 name=node.name,
                 node_type=func_type,
@@ -219,4 +318,4 @@ def parse_code_string(
                 last_commit_author=commit_author
             ))
 
-    return chunks
+    return chunks, graph_nodes, graph_edges

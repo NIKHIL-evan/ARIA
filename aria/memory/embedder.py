@@ -4,6 +4,7 @@ from typing import List
 from qdrant_client.models import PointStruct
 from aria.memory.repo_reader import CodeChunk
 from aria.memory.qdrant_store import QdrantStore
+from qdrant_client.http import models
 from dotenv import load_dotenv
 
 BATCH_SIZE = 64
@@ -76,3 +77,12 @@ class Embedder:
                 collection_name=self.qdrant_store.collection_name,
                 points=points,
             )
+
+    def purge_repository(self, repo_url: str):
+        """Deletes all chunks associated with a specific repository."""
+        self.qdrant_store.client.delete(
+            collection_name=self.qdrant_store.collection_name,
+            points_selector=models.Filter(
+                must=[models.FieldCondition(key="repo_url", match=models.MatchValue(value=repo_url))]
+            )
+        )
