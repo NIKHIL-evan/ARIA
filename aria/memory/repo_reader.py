@@ -21,7 +21,8 @@ class CodeChunk(BaseModel):
     docstring: Optional[str] = None    
     
     # --- Dependency Mapping ---
-    imports: List[str] = Field(default_factory=list)
+    calls: list[str] = Field(default_factory=list)
+    imports: list[str] = Field(default_factory=list)
     
     # --- Technical Details ---
     line_range: Tuple[int, int]        
@@ -44,39 +45,45 @@ class GraphEdge(BaseModel):
     target_name: Optional[str] = None # Used when we only know the string name (e.g., CALLS, IMPORTS)
     relation_type: str                # "DEFINES", "CALLS", "IMPORTS", "INHERITS"
 
-
-def _resolve_call_name(node: ast.AST) -> str | None:
-    """Recursively unwraps AST nodes to get the full string name of a call."""
+def _resolve_call_name(node: ast.AST, current_class: str = None) -> str:
+    """
+    Recursively resolves the name of a function call.
+    Translates 'self.method' to 'ClassName.method' if current_class is provided.
+    """
     if isinstance(node, ast.Name):
         return node.id
         
     elif isinstance(node, ast.Attribute):
-        base_name = _resolve_call_name(node.value)
-        if base_name:
-            if base_name == "self":
-                return node.attr  # Convert 'self.sync_graph' to just 'sync_graph'
-            return f"{base_name}.{node.attr}"
+        # Recursively resolve the base object (e.g., 'module.submodule' in 'module.submodule.func')
+        base = _resolve_call_name(node.value, current_class)
+        if base:
+            # Smart translation for intra-class calls
+            if current_class and base in ['self', 'cls']:
+                return f"{current_class}.{node.attr}"
+            return f"{base}.{node.attr}"
             
-    return None 
+    return None
 
-def _extract_dependencies(node: ast.AST) -> tuple[list[str], list[str]]:
-    """Sweeps an AST node body to extract all function calls and imports."""
+def _extract_dependencies(node: ast.AST, current_class: str = None) -> tuple[list[str], list[str]]:
+    """Sweeps an AST node body to extract all function calls and exact imports."""
     calls = []
     imports = []
     
     for child in ast.walk(node):
         if isinstance(child, ast.Call):
-            call_name = _resolve_call_name(child.func)
+            # Pass the context down to the resolver!
+            call_name = _resolve_call_name(child.func, current_class)
             if call_name:
                 calls.append(call_name)
                 
         elif isinstance(child, ast.ImportFrom):
-            if child.module:
-                imports.append(child.module)
+            for alias in child.names:
+                imports.append(alias.name)
                 
         elif isinstance(child, ast.Import):
             for alias in child.names:
-                imports.append(alias.name)
+                base_module = alias.name.split('.')[0]
+                imports.append(base_module)
                 
     return list(set(calls)), list(set(imports))
 
@@ -123,23 +130,28 @@ def parse_code_string(
         import hashlib
         return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
-    # --- Helper: Import Extraction ---
-    def _extract_imports(tree_node):
-        imports = []
-        for node in ast.walk(tree_node):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    imports.append(alias.name)
-            elif isinstance(node, ast.ImportFrom):
-                module = node.module if node.module else ""
-                imports.append(module)
-        return imports
 
     # 1. MODULE LEVEL CHUNK
     module_name = file_path.split('/')[-1].replace('.py', '')
     module_id = _generate_node_id(repo_url, file_path, "module", module_name)
     mod_doc = ast.get_docstring(tree) if is_parsable else source_code[:500]
-    mod_imports = _extract_imports(tree) if is_parsable else None
+    mod_calls, mod_imports = [], []
+    if is_parsable:
+        for node in tree.body:
+            # Prevent the recursive crawler from entering isolated scopes
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue 
+            
+            # Extract only from global-level statements (Imports, Global assignments, etc.)
+            calls, imports = _extract_dependencies(node) 
+            mod_calls.extend(calls)
+            mod_imports.extend(imports)
+            
+        # Deduplicate
+        mod_calls = list(set(mod_calls))
+        mod_imports = list(set(mod_imports))
+    else:
+        mod_calls, mod_imports = [], []
     global_assignments = []
     if is_parsable:
         for node in tree.body:
@@ -160,13 +172,14 @@ def parse_code_string(
         repo_url=repo_url,
         content= f"Docstring: {mod_doc}\nImports: {mod_imports}\nGlobal Variables:\n{global_text}",
         docstring=mod_doc,
+        calls=mod_calls,
         imports=mod_imports,
         line_range=(1, len(source_lines)),
         last_commit_message=commit_message,
         last_commit_author=commit_author
     ))
     graph_nodes.append(GraphNode(id=module_id, name=module_name, node_type="module", file_path=file_path, repo_url=repo_url))
-    mod_calls, mod_imports = _extract_dependencies(tree)
+
     for imp in mod_imports:
         graph_edges.append(GraphEdge(
             source_id=module_id, target_name=imp, relation_type="IMPORTS"
@@ -266,7 +279,7 @@ def parse_code_string(
 
                     graph_edges.append(GraphEdge(source_id=class_id, target_id=method_id, relation_type="DEFINES"))
 
-                    func_calls, _ = _extract_dependencies(sub_node)
+                    func_calls, _ = _extract_dependencies(sub_node, current_class=node.name)
                     for calls in func_calls:
                         graph_edges.append(GraphEdge(source_id=method_id, target_name=calls, relation_type="CALLS"))
 
@@ -281,6 +294,7 @@ def parse_code_string(
                         content=method_content,
                         signature=_extract_exact_signature(sub_node, source_lines),
                         docstring=ast.get_docstring(sub_node),
+                        calls=func_calls,
                         line_range=(sub_node.lineno, sub_node.end_lineno),
                         last_commit_message=commit_message,
                         last_commit_author=commit_author
@@ -313,6 +327,7 @@ def parse_code_string(
                 content=func_content,
                 signature=_extract_exact_signature(node, source_lines),
                 docstring=ast.get_docstring(node),
+                calls=func_calls,
                 line_range=(node.lineno, node.end_lineno),
                 last_commit_message=commit_message,
                 last_commit_author=commit_author
