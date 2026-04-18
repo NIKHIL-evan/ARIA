@@ -1,6 +1,12 @@
 from typing import Dict, List
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient, models
 from qdrant_client.http import models
+import voyageai
+from aria.memory.repo_reader import CodeChunk
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class QdrantStore:
     def __init__(self, host: str = "localhost", port: int = 6333):
@@ -8,6 +14,7 @@ class QdrantStore:
         self.client = QdrantClient(host=host, port=port) 
         self.collection_name = "aria_codebase"
         self._ensure_collection()
+        self.voyage = voyageai.Client(api_key=os.getenv("VOYAGE_API_KEY"))
 
     def _ensure_collection(self):
         """Creates the collection if it does not exist. Voyage-code-3 uses 1024 dimensions."""
@@ -56,3 +63,36 @@ class QdrantStore:
                 existing_state[str(record.id)] = content_hash
                 
         return existing_state
+    
+    def search(self, query: str, repo_url: str, limit: int = 3) -> List[CodeChunk]:
+        """Searches Qdrant for the closest semantic matches to the query."""
+        
+        query_vector = self.voyage.embed(
+            query,
+            model="voyage-code-3",
+            input_type="query"
+        ).embeddings[0]
+        
+        repo_filter = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="repo_url",
+                    match=models.MatchValue(value=repo_url)
+                )
+            ]
+        )
+
+        hits = self.client.query_points(
+            collection_name=self.collection_name,
+            query=query_vector,
+            query_filter=repo_filter,
+            limit=limit
+        ).points
+
+        result = []
+        for hit in hits:
+            chunk_data = hit.payload
+            chunk_object = CodeChunk(**chunk_data)
+            result.append(chunk_object)
+
+        return result
