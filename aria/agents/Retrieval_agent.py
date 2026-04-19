@@ -1,7 +1,7 @@
 from aria.memory.qdrant_store import QdrantStore
 import os
 from neo4j import GraphDatabase
-from github_client import GitHubClient
+from aria.infra.github_client import GitHubClient
 import anthropic
 from urllib.parse import urlparse
 from dotenv import load_dotenv
@@ -20,7 +20,9 @@ class RetrievalAgent:
         password = os.getenv("NEO4J_PASSWORD", "password")
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
         self.qdrant_store = QdrantStore()
-        self.github_client = GitHubClient()
+        github_app_id = os.getenv("GITHUB_APP_ID")
+        github_pem_path = os.getenv("GITHUB_PEM_PATH")
+        self.github_client = GitHubClient(app_id=github_app_id, pem_path=github_pem_path)
         self.client = anthropic.AsyncAnthropic(api_key = os.environ.get("ANTHROPIC_API_KEY"))
 
     def search_semantic_code(self, query: str, repo_url: str, limit: int = 3) -> str:
@@ -178,8 +180,8 @@ class RetrievalAgent:
         else:
             raise ValueError(f"Unknown tool: {name}")
 
-    async def run(self, repo_url: str, query: str, max_step: int = 5) -> str:
-        # 1. Give Claude the context immediately in a system prompt
+    async def run(self, repo_url: str, query: str, max_step: int = 6) -> str:
+        # Give Claude the context immediately in a system prompt
         system_prompt = f"""You are the ARIA Retrieval Agent, a specialized data-extraction microservice. 
             Your target repository is: {repo_url}
 
@@ -194,6 +196,7 @@ class RetrievalAgent:
 
             # EXECUTION RULES
             - Iterate autonomously. If a search returns no results, rethink your query and search again.
+            - DEPTH LIMIT: Do not traverse the graph infinitely. Map the immediate inbound/outbound dependencies of the requested nodes and STOP.
             - Do not make redundant calls. If you already pulled the blast radius for `main.py`, do not pull it again.
             - Stop exploring the moment you have enough context to definitively answer the downstream agent's query.
 
@@ -212,9 +215,9 @@ class RetrievalAgent:
 
             # 2. Make the API Call
             response = await self.client.messages.create(
-                model="claude-sonnet-4-5",
+                model="claude-sonnet-4-6",
                 system=system_prompt,
-                max_tokens=2048,
+                max_tokens=8192,
                 messages=messages,
                 tools=self.retrieval_tools
             )
@@ -262,6 +265,11 @@ class RetrievalAgent:
                     "role": "user",
                     "content": list(tool_results_content)
                 })
+
+            elif response.stop_reason == "max_tokens":
+                text_blocks = [b.text for b in response.content if b.type == "text"]
+                partial_report = "\n".join(text_blocks)
+                return f"WARNING: Report was cut off due to token limits. Partial output below:\n\n{partial_report}"
 
             else:
                 return f"Error: Unexpected stop_reason '{response.stop_reason}'. Aborting."

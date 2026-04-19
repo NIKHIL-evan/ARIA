@@ -1,128 +1,99 @@
+from aria.agents.Retrieval_agent import RetrievalAgent
+import anthropic 
+import asyncio
 import os
-from typing import Literal
-
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
-from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import SystemMessage, HumanMessage
-
-from aria.memory.retriever import Retriever
-from aria.memory.graph_retriever import GraphRetriever
-from aria.agents.prompts import ONBOARDING_SYSTEM, ONBOARDING_USER
 
 load_dotenv()
 
+r = RetrievalAgent()
 
-class ReadingStep(BaseModel):
-    order: int = Field(description="Reading order number starting from 1.")
-    file_path: str = Field(description="File path to read.")
-    reason: str = Field(description="One sentence explaining why this file matters.")
+class OnboardingAgent:
+    def __init__(self, retriever):
+        self.retriever = retriever
+        self.client = anthropic.AsyncAnthropic(api_key= os.environ.get("ANTHROPIC_API_KEY"))
 
+    async def run(self, query: str, repo_url: str) -> str:
+        """Runs a React agent loop with Retrieval tool.
+        First agent must understand the user query which are mostly vauge or too descriptive,
+        then construct a database search query for required infomation about the codebase,
+        then analyze all the info from retrieval tool and convert it educational or helpful format or what the user asked"""
 
-class ARIAOnboarding(BaseModel):
-    welcome_summary: str = Field(
-        description="2-3 sentence overview of the codebase for a new developer. "
-                    "Mention the core purpose and key architectural patterns."
-    )
-    reading_order: list[ReadingStep] = Field(
-        description="Ordered list of files to read first. Max 7 files. "
-                    "Start with the entry point, then core modules, then examples."
-    )
-    key_concepts: list[str] = Field(
-        description="List of 3-5 concepts the developer must understand before "
-                    "touching any code. Be specific to this codebase."
-    )
-    first_task_suggestion: str = Field(
-        description="A concrete, small, safe first task the new developer can do "
-                    "to get familiar with the codebase without breaking anything."
-    )
+        tools = [
+            {
+                "name": "dispatch_retrieval_scout",
+                "description": "Dispatches the ARIA Retrieval Scout to automatically search the codebase, read files, and map graph dependencies. You MUST use this tool before attempting to answer any codebase questions."
+                " Pass a highly targeted, technical search phrase (e.g., 'Stripe webhook listener implementation') into the tool, not a conversational question. The Scout will return a dense Markdown report containing absolute reality.",
+                "input_schema": {
+                    "type": "object",
+                    "properties":{
+                        "technical_search_phrase": {"type": "string", "description": "Highly targeted phrase derived from original user query which Retrieval agent will use for semantic search " }
+                    },
+                    "required": ["technical_search_phrase"]
+                }
+            }
+        ]
+        system_prompt = """"""
 
+        messages = [{"role": "user", "content": query}]
 
-retriever       = Retriever()
-graph_retriever = GraphRetriever()
+        step = 0
+        max_step = 5
+        while step < max_step:
+            step += 1
+            print(f"\n--- [Step {step}] Claude is thinking... ---")
 
-llm = ChatAnthropic(
-    model="claude-sonnet-4-5",
-    api_key=os.getenv("ANTHROPIC_API_KEY"),
-    max_tokens=1024,
-    temperature=0.0,
-).with_structured_output(ARIAOnboarding)
+            response = await self.client.messages.create(
+                model="claude-haiku-4-5",
+                system=system_prompt,
+                max_tokens=8192,
+                messages=messages,
+                tools=tools
+            )
 
+            messages.append({"role": "assistant", "content": response.content})
 
-def get_most_connected_modules(limit: int = 10) -> list:
-    with graph_retriever.driver.session() as session:
-        result = session.run("""
-            MATCH (m:Module)-[:IMPORTS]->(dep:Module)
-            WITH m, count(dep) AS import_count
-            ORDER BY import_count DESC
-            LIMIT $limit
-            RETURN m.file_path AS file_path, m.repo_url AS repo_url, import_count
-        """, limit=limit)
-        return [record for record in result]
+            if response.stop_reason == "tool_use":
+                tool_calls = [
+                    b for b in response.content 
+                    if b.type == "tool_use"
+                ]
 
+                async def process_single_call(call):
+                    print(f"   -> Dispatching Scout with phrase: '{call.input['technical_search_phrase']}'")
+                    try:
+                        search_phrase = call.input["technical_search_phrase"]
+                        result = await self.retriever.run(repo_url=repo_url, query=search_phrase)
+                    except Exception as e:
+                        print(f"Error executing {call.name}: {str(e)}")
 
-def build_architecture_context(modules: list) -> str:
-    if not modules:
-        return "No module data available."
-    lines = []
-    for record in modules:
-        lines.append(
-            f"  - {record['file_path']} ({record['import_count']} imports)"
-        )
-    return "\n".join(lines)
+                    return {
+                        "type": "tool_result",
+                        "tool_use_id": call.id,
+                        "content": result
+                    }
+                
+                tool_results_content = await asyncio.gather(
+                    *(process_single_call(call) for call in tool_calls))
+                
+                messages.append({
+                    "role": "user",
+                    "content": list(tool_results_content)
+                })
 
+            elif response.stop_reason == "end_turn":
+                text_blocks = [
+                    b.text for b in response.content 
+                    if b.type == "text"
+                ]
+                return "\n".join(text_blocks)
+            
+            elif response.stop_reason == "max_tokens":
+                text_blocks = [b.text for b in response.content if b.type == "text"]
+                partial_report = "\n".join(text_blocks)
+                return f"WARNING: Report was cut off due to token limits. Partial output below:\n\n{partial_report}"
 
-def build_chunks_context(chunks: list) -> str:
-    if not chunks:
-        return "No code samples found."
-    sections = []
-    for i, chunk in enumerate(chunks, 1):
-        sections.append(
-            f"[{i}] {chunk.name} — {chunk.file_path}\n"
-            f"```python\n{chunk.content[:400]}\n```"
-        )
-    return "\n\n".join(sections)
-
-
-def send_onboarding_to_github(repo_full_name: str, member_login: str, onboarding: ARIAOnboarding) -> None:
-    print("\n[GitHub STUB] Would post onboarding comment:")
-    print(f"  Repo    : {repo_full_name}")
-    print(f"  Member  : @{member_login}")
-    print(f"  Summary : {onboarding.welcome_summary[:200]}")
-    print(f"  Reading order: {len(onboarding.reading_order)} files")
-    print(f"  Key concepts : {onboarding.key_concepts}")
-
-
-def onboarding_agent(state: dict) -> dict:
-    payload      = state["event_payload"]
-    repo_name    = payload.get("repository", {}).get("full_name", "unknown/repo")
-    member_login = payload.get("member", {}).get("login", "new_developer")
-
-    print(f"\n[OnboardingAgent] Onboarding @{member_login} to {repo_name}")
-
-    core_chunks = retriever.search(query="application entry point core module setup", limit=5)
-    print(f"  Retrieved {len(core_chunks)} core module chunks from Qdrant")
-
-    connected_modules = get_most_connected_modules(limit=8)
-    print(f"  Retrieved {len(connected_modules)} most connected modules from Neo4j")
-
-    user_message = ONBOARDING_USER.format(
-        repo             = repo_name,
-        member           = member_login,
-        core_chunks      = build_chunks_context(core_chunks),
-        architecture     = build_architecture_context(connected_modules),
-    )
-
-    print("  Calling Claude for onboarding guide...")
-    onboarding: ARIAOnboarding = llm.invoke([
-        SystemMessage(content=ONBOARDING_SYSTEM),
-        HumanMessage(content=user_message),
-    ])
-
-    send_onboarding_to_github(repo_name, member_login, onboarding)
-
-    return {
-        "retrieved_chunks": core_chunks,
-        "graph_context"   : [],
-        "agent_output"    : onboarding.model_dump_json(indent=2),
-    }
+            else:
+                return f"Error: Unexpected stop_reason '{response.stop_reason}'. Aborting."
+            
+        return "Error: Reached maximum steps without finding a final answer."

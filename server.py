@@ -1,7 +1,7 @@
 import hmac
 import hashlib
 from fastapi import FastAPI, Request, Header, HTTPException
-from github_client import GitHubClient
+from aria.infra.github_client import GitHubClient
 from aria.memory.repo_reader import parse_code_string
 from aria.memory.qdrant_store import QdrantStore
 from aria.memory.syncmanager import SyncManager
