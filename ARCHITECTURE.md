@@ -178,3 +178,56 @@ Relationships:
   (todo: add optional filter for source-only ingestion)
 - Only Python supported currently
   (JavaScript, Go support planned for Phase 3)
+
+
+
+  Agent Design Report: The Protector & The Efficiency Expert
+This report outlines the architecture, features, and "sellable" value for the two new agents you are adding. These are designed to appeal to Engineering Managers and CTOs by solving "enterprise-scale" problems that individual coding assistants (like Copilot/Claude) often miss.
+1. The Protector Agent (Security & Compliance)
+The "Insurance Policy" for the codebase.
+Core Philosophy: "Trust, but Verify." It assumes every PR contains a potential risk until proven otherwise. It does not just suggest; it blocks dangerous merges.
+Key Pain Points Solved:
+Secret Leakage: Devs accidentally committing API keys or .env files.
+Supply Chain Attacks: Adding a new npm/pip package that is abandoned, malicious, or has a CVE.
+Compliance Violations: Using GPL licensed code in a closed-source project, or logging PII (Personally Identifiable Information) like credit card numbers or emails to plain text logs.
+"Shadow IT" Logic: Developers using unauthorized external APIs or libraries that haven't been vetted by security.
+Features & Capabilities:
+License Guard: Scans package.json or requirements.txt changes. If a package with a viral license (e.g., GPLv3) is added, it blocks the PR to prevent legal contagion.
+PII Detective: Uses regex and NLP to scan code for logging statements (e.g., console.log(userObj)). If it detects fields like ssn, password, or email being logged, it flags the line.
+Dependency Vetting: When a new package is added, it checks the package's "Health Score" (maintenance status, age, known vulnerabilities) and warns if it's a "zombie" project.
+IaC (Infrastructure as Code) Scan: Checks Terraform/AWS CDK files for open S3 buckets (public_access: true) or overly permissive IAM roles (Action: "*"). 
+ManageEngine
+ManageEngine
+ +1
+Triggers (Webhooks):
+pull_request (opened/synchronized): The main trigger. Runs the full scan on the diff.
+push (to default branch): A "Safety Net" scan in case a PR check was bypassed by an admin.
+schedule (daily/weekly): Scans the existing codebase for new CVEs discovered in old dependencies (Zero-day watch). 
+Glean
+Glean
+The "Manager Pitch":
+"This agent is your 24/7 Security Engineer. It catches the accidental API key leak or the dangerous open S3 bucket before it reaches production, saving you from a potential million-dollar data breach."
+2. The Efficiency Expert (Cost & Performance)
+The "Senior Architect" that watches the bottom line.
+Core Philosophy: "Code that works isn't enough; it must be scalable and cheap." It focuses on Big O, Cloud Costs, and Redundancy.
+Key Pain Points Solved:
+Cloud Bill Shock: A dev changes a serverless function to run every minute instead of every hour, increasing the AWS bill by 60x.
+Performance Regressions: A dev writes a nested loop $O(n^2)$ that works fine in testing (10 items) but freezes the app in production (10,000 items).
+Code Bloat: A dev imports a heavy library (e.g., lodash) just to use one function, when a native equivalent exists.
+Redundant Utilities: A dev writes a new formatDate function because they didn't know utils/date.js already existed.
+Features & Capabilities:
+Big-O Complexity Estimator: Parses the AST (Abstract Syntax Tree) of changed code. If it detects nested loops or recursive calls on critical data structures, it comments: "Warning: This looks like 
+
+
+
+ complexity. On our dataset of 5M users, this might timeout.".
+Cost Projection (FinOps): If it sees changes to terraform files or cron schedules, it calculates a rough "Monthly Cost Delta." "Changing this Lambda memory from 128MB to 1024MB will increase costs by ~$15/month per million invocations."
+"Wheel Reinvention" Detector: Uses a vector database of the repo's existing utility functions. If a new function is semantically similar to an existing one, it suggests reusing the old one to keep the bundle size small.
+Bundle Size Watchdog: Checks package-lock.json changes. "You added moment.js (250kb). We recommend date-fns (12kb) or the native Intl API for this use case." 
+SmartDev
+SmartDev
+Triggers (Webhooks):
+pull_request (opened/synchronized): Runs the diff analysis.
+check_run: Can be triggered as part of the CI pipeline to "fail" the build if the estimated cost or bundle size exceeds a budget threshold.
+The "Manager Pitch":
+"This agent pays for itself. It prevents 'Cloud Bill Shock' and stops developers from writing slow code that requires expensive refactoring later. It’s like having a Senior Architect review every single line of code for scalability."

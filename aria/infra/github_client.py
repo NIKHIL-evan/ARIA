@@ -44,7 +44,7 @@ class GitHubClient:
         token_url = f"https://api.github.com/app/installations/{installation_id}/access_tokens"
         token_response = requests.post(token_url, headers=headers)
         
-        # THIS IS THE BLOCK YOU DELETED. DO NOT DELETE IT.
+        
         if not token_response.ok:
             raise Exception(f"CRITICAL API ERROR: GitHub rejected the token request. Details: {token_response.text}")
             
@@ -104,8 +104,20 @@ class GitHubClient:
         
         else:
             raise Exception(f"Failed to fetch repo: {response.text}")
-            
-                            
         
-        
+    def get_pr_files(self, owner: str, repo: str, pr_number: int) -> list:
+        """Returns list of changed files with their patches for a PR."""
+        token = self.get_installation_token(owner, repo)
+        header = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+
+        url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/files"
+        response = requests.get(url=url, headers=header)
+
+        if not response.ok:
+            raise Exception(f"Failed to fetch PR files: {response.text}")
+
+        return response.json()
             
