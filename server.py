@@ -2,6 +2,7 @@ import hmac
 import os
 from dotenv import load_dotenv
 import hashlib
+import asyncio
 from fastapi import FastAPI, Request, Header, HTTPException, BackgroundTasks
 from aria.infra.github_client import GitHubClient
 from aria.memory.repo_reader import parse_code_string
@@ -45,8 +46,8 @@ async def process_installation(payload: dict):
         for repo in repos_to_purge:
             repo_url = f"https://github.com/{owner}/{repo['name']}"
             print(f"\n[PURGE] Destroying all data for: {repo_url}")
-            embedder.purge_repository(repo_url)
-            neo4j_manager.purge_repository(repo_url)
+            await asyncio.to_thread(embedder.purge_repository, repo_url)
+            await asyncio.to_thread(neo4j_manager.purge_repository, repo_url)
 
     elif action in ["created", "added"]:
         repos = payload["repositories"]
@@ -59,7 +60,7 @@ async def process_installation(payload: dict):
             repo_nodes, repo_edges = [], []
             print(f"\n--- Ingesting Repository: {repo_name} ---")
 
-            files = diplomat.get_repo_content(owner, repo_name)
+            files = await asyncio.to_thread(diplomat.get_repo_content, owner, repo_name)
             for path, source_code in files.items():
                 incoming_chunks, incoming_nodes, incoming_edges = parse_code_string(source_code, path, repo_url, commit_message=commit_message, commit_author=commit_author)
                     
@@ -71,15 +72,64 @@ async def process_installation(payload: dict):
             if repo_to_add:
                 print(f"Deploying {len(repo_to_add)} additions to Qdrant...")
                 # We pass empty lists for updates and deletes
-                embedder.sync_deltas(repo_to_add, [], []) 
+                await asyncio.to_thread(embedder.sync_deltas, repo_to_add, [], []) 
                     
             if repo_nodes or repo_edges:
                 print(f"Deploying {len(repo_nodes)} nodes and {len(repo_edges)} edges to Neo4j...")
                 # We pass an empty list for deleted_ids
-                neo4j_manager.sync_graph(repo_nodes, repo_edges, [])
+                await asyncio.to_thread(neo4j_manager.sync_graph, repo_nodes, repo_edges, [])
 
             print(f"\n--- Finished Ingesting Repository: {repo_name} ---")
 
+
+# ---Helper Functions---
+async def add_mod_single_file(owner, repo_name, repo_url, commit_message, commit_author, file_path):
+    try:
+        #Step 1 Download and Step 2 Fetch from DB concurrently
+        raw_text, existing_state = await asyncio.gather(
+            asyncio.to_thread(diplomat.get_file_content, owner, repo_name, file_path),  
+            asyncio.to_thread(store.get_file_state, repo_url, file_path)    
+        )
+        # Step 2: Parse
+        incoming_chunks, incoming_nodes, incoming_edges = parse_code_string(
+            source_code=raw_text,
+            file_path=file_path,
+            repo_url=repo_url,
+            commit_message=commit_message,
+            commit_author=commit_author
+        )
+        
+        # Step 3: Math
+        to_add, to_update, to_delete_ids = manager.compute_deltas(existing_state, incoming_chunks)
+        
+        # Step 4: Database Execution
+        await asyncio.to_thread(embedder.sync_deltas, to_add, to_update, to_delete_ids)
+
+        changed_ids = {chunk.id for chunk in (to_add + to_update)}
+        nodes_to_sync = [n for n in incoming_nodes if n.id in changed_ids]
+        edges_to_sync = incoming_edges if (nodes_to_sync or to_delete_ids) else []
+        
+        if nodes_to_sync or edges_to_sync or to_delete_ids:
+            await asyncio.to_thread(neo4j_manager.sync_graph, nodes_to_sync, edges_to_sync, to_delete_ids)
+
+    except Exception as e:
+        raise Exception(f"Failed processing {file_path}: {e}")
+
+async def remove_single_file(repo_url, file_path):
+    try:
+        existing_state = await asyncio.to_thread(store.get_file_state, repo_url, file_path)
+        to_delete = list(existing_state.keys())
+        
+        if to_delete:
+            print(f"Purging {len(to_delete)} orphaned items from {file_path}...")
+            # Purge from Qdrant
+            await asyncio.to_thread(embedder.qdrant_store.client.delete, 
+            store.collection_name, to_delete)
+            # Purge from Neo4j (passing empty lists for nodes/edges)
+            await asyncio.to_thread(neo4j_manager.sync_graph, nodes=[], edges=[], delete_ids=to_delete)
+    
+    except Exception as e:
+        raise Exception(f"Failed processing {file_path}: {e}")
 
 async def process_push(payload: dict):
     """Handles embedding updates for pushed commits."""
@@ -94,54 +144,15 @@ async def process_push(payload: dict):
         # Extract the lists
         mod_add = commit.get("modified",[]) + commit.get("added",[])
         removed = commit.get("removed",[])
-
-        # Loop through only the modified and added files in THIS commit
-        for file_path in mod_add:
-            if not file_path.endswith(".py"):
-                continue
-                
-            print(f"\n--- Processing {file_path} ---")
-            
-            # Step 1: Download
-            raw_text = diplomat.get_file_content(owner, repo_name, file_path)
-            
-            # Step 2: Parse
-            incoming_chunks, incoming_nodes, incoming_edges = parse_code_string(
-                source_code=raw_text,
-                file_path=file_path,
-                repo_url=repo_url,
-                commit_message=commit_message,
-                commit_author=commit_author
-            )
-            
-            # Step 3: Fetch DB State
-            existing_state = store.get_file_state(repo_url, file_path)
-            
-            # Step 4: Math
-            to_add, to_update, to_delete_ids = manager.compute_deltas(existing_state, incoming_chunks)
-            
-            # Step 5: Database Execution
-            embedder.sync_deltas(to_add, to_update, to_delete_ids)
-
-            changed_ids = {chunk.id for chunk in (to_add + to_update)}
-            nodes_to_sync = [n for n in incoming_nodes if n.id in changed_ids]
-            edges_to_sync = incoming_edges if (nodes_to_sync or to_delete_ids) else []
-            
-            if nodes_to_sync or edges_to_sync or to_delete_ids:
-                neo4j_manager.sync_graph(nodes_to_sync, edges_to_sync, to_delete_ids)
-        
-        for file_path in removed:
-            existing_state = store.get_file_state(repo_url, file_path)
-            to_delete = list(existing_state.keys())
-            
-            if to_delete:
-                print(f"Purging {len(to_delete)} orphaned items from {file_path}...")
-                # Purge from Qdrant
-                embedder.qdrant_store.client.delete(
-                    collection_name=store.collection_name, points_selector=to_delete
-                )
-                # Purge from Neo4j (passing empty lists for nodes/edges)
-                neo4j_manager.sync_graph(nodes=[], edges=[], delete_ids=to_delete)
+        results = await asyncio.gather(
+            asyncio.gather(*(add_mod_single_file(owner, repo_name, repo_url, commit_message, commit_author, file_path) for file_path in mod_add if file_path.endswith(".py")), return_exceptions= True),
+            asyncio.gather(*(remove_single_file(repo_url, file_path) for file_path in removed), return_exceptions=True),
+            return_exceptions=True
+        )
+        for process in results:
+            for result in process:
+                if isinstance(result, Exception):
+                    print(f"[ERROR] {result}")
 
     print(f"\n--- Finished Processing Push for {repo_name} ---")
 
@@ -154,7 +165,7 @@ async def process_pull_request(payload: dict):
     repo_name = payload["repository"]["name"]
     
     if action in ["opened", "synchronize"]:
-        files = diplomat.get_pr_files(owner, repo_name, pull_number)
+        files = await asyncio.to_thread(diplomat.get_pr_files, owner, repo_name, pull_number)
         for file in files:
             path = file["filename"]
             status = file["status"]
