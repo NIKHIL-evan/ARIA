@@ -1,13 +1,17 @@
-.PHONY: dev stop
+.PHONY: mcp github stop
 
-dev:
-	@echo "Starting all services..."
-	PYTHONPATH=. uv run python server.py & \
-	PYTHONPATH=. uv run python mcp_server.py & \
-	ngrok start --all --config ngrok.yml
+mcp:
+	@echo "Starting MCP server..."
+	PYTHONPATH=. uv run python mcp_server.py &
+	ngrok http 8001 --domain=bagpipe-accustom-groove.ngrok-free.dev
+
+github:
+	@echo "Starting GitHub App server..."
+	PYTHONPATH=. uv run python server.py &
+	ngrok http 8000 --domain=bagpipe-accustom-groove.ngrok-free.dev
 
 stop:
 	@pkill -f "mcp_server.py" || true
 	@pkill -f "server.py" || true
 	@pkill -f "ngrok" || true
-	@echo "All services stopped."
+	@echo "Stopped."

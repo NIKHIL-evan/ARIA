@@ -9,7 +9,7 @@ from aria.memory.repo_reader import parse_code_string
 from aria.memory.qdrant_store import QdrantStore
 from aria.memory.syncmanager import SyncManager
 from aria.memory.embedder import Embedder
-from aria.memory.graph_writer import Neo4jManager
+from aria.memory.graph_writer import Neo4jManager 
 
 load_dotenv()
 
