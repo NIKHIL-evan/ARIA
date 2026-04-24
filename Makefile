@@ -1,17 +1,24 @@
-.PHONY: mcp github stop
+.PHONY: mcp github stop restart
 
-mcp:
-	@echo "Starting MCP server..."
-	PYTHONPATH=. uv run python mcp_server.py &
-	ngrok http 8001 --domain=bagpipe-accustom-groove.ngrok-free.dev
+DOMAIN = bagpipe-accustom-groove.ngrok-free.dev
+PYTHON_EXEC = PYTHONPATH=. uv run python
 
-github:
-	@echo "Starting GitHub App server..."
-	PYTHONPATH=. uv run python server.py &
-	ngrok http 8000 --domain=bagpipe-accustom-groove.ngrok-free.dev
+mcp: stop
+	@echo "🚀 Starting MCP Server on Port 8001..."
+	$(PYTHON_EXEC) mcp_server.py > mcp.log 2>&1 &
+	sleep 2
+	ngrok.exe http 8001 --domain=$(DOMAIN)
+
+github: stop
+	@echo "🚀 Starting GitHub App Server on Port 8000..."
+	$(PYTHON_EXEC) server.py > github.log 2>&1 &
+	sleep 2
+	ngrok.exe http 8000 --domain=$(DOMAIN)
+
+restart: stop mcp
 
 stop:
-	@pkill -f "mcp_server.py" || true
-	@pkill -f "server.py" || true
-	@pkill -f "ngrok" || true
-	@echo "Stopped."
+	@echo "🛑 Stopping all servers and ngrok..."
+	@fuser -k 8000/tcp 8001/tcp 2>/dev/null || true
+	@taskkill.exe /F /IM ngrok.exe /T 2>/dev/null || true
+	@echo "✅ Cleaned up."
