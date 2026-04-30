@@ -77,13 +77,20 @@ async def process_installation(payload: dict):
             if repo_nodes or repo_edges:
                 print(f"Deploying {len(repo_nodes)} nodes and {len(repo_edges)} edges to Neo4j...")
                 # We pass an empty list for deleted_ids
-                await asyncio.to_thread(neo4j_manager.sync_graph, repo_nodes, repo_edges, [])
+                from datetime import datetime, timezone
+                commit_sha = "initial_ingestion"
+                commit_time = datetime.now(timezone.utc).isoformat()
+                await asyncio.to_thread(neo4j_manager.sync_graph,
+                    repo_nodes, repo_edges,   
+                    [], [],                     
+                    [],                         
+                    commit_sha, commit_time)
 
             print(f"\n--- Finished Ingesting Repository: {repo_name} ---")
 
 
 # ---Helper Functions---
-async def add_mod_single_file(owner, repo_name, repo_url, commit_message, commit_author, file_path):
+async def add_mod_single_file(owner, repo_name, repo_url, commit_message, commit_author, file_path, commit_sha, commit_time):
     try:
         #Step 1 Download and Step 2 Fetch from DB concurrently
         raw_text, existing_state = await asyncio.gather(
@@ -105,17 +112,26 @@ async def add_mod_single_file(owner, repo_name, repo_url, commit_message, commit
         # Step 4: Database Execution
         await asyncio.to_thread(embedder.sync_deltas, to_add, to_update, to_delete_ids)
 
-        changed_ids = {chunk.id for chunk in (to_add + to_update)}
-        nodes_to_sync = [n for n in incoming_nodes if n.id in changed_ids]
-        edges_to_sync = incoming_edges if (nodes_to_sync or to_delete_ids) else []
-        
-        if nodes_to_sync or edges_to_sync or to_delete_ids:
-            await asyncio.to_thread(neo4j_manager.sync_graph, nodes_to_sync, edges_to_sync, to_delete_ids)
+        added_ids = {chunk.id for chunk in to_add}
+        updated_ids = {chunk.id for chunk in to_update}
 
+        nodes_to_add = [n for n in incoming_nodes if n.id in added_ids]
+        nodes_to_update = [n for n in incoming_nodes if n.id in updated_ids]
+
+        edges_for_new = [e for e in incoming_edges if e.source_id in added_ids]
+        edges_for_updated = [e for e in incoming_edges if e.source_id in updated_ids]
+        
+        if nodes_to_add or nodes_to_update or edges_for_new or edges_for_updated or to_delete_ids:
+            await asyncio.to_thread(neo4j_manager.sync_graph,
+                nodes_to_add, edges_for_new,
+                nodes_to_update, edges_for_updated,
+                to_delete_ids,
+                commit_sha, commit_time)
+            
     except Exception as e:
         raise Exception(f"Failed processing {file_path}: {e}")
 
-async def remove_single_file(repo_url, file_path):
+async def remove_single_file(repo_url, file_path, commit_sha, commit_time):
     try:
         existing_state = await asyncio.to_thread(store.get_file_state, repo_url, file_path)
         to_delete = list(existing_state.keys())
@@ -126,7 +142,12 @@ async def remove_single_file(repo_url, file_path):
             await asyncio.to_thread(embedder.qdrant_store.client.delete, 
             store.collection_name, to_delete)
             # Purge from Neo4j (passing empty lists for nodes/edges)
-            await asyncio.to_thread(neo4j_manager.sync_graph, nodes=[], edges=[], delete_ids=to_delete)
+            await asyncio.to_thread(neo4j_manager.sync_graph, 
+                nodes_to_add=[], 
+                edges_to_add=[],
+                nodes_to_update=[], edges_to_update=[],
+                ids_to_delete=to_delete,
+                commit_sha=commit_sha, commit_time=commit_time)
     
     except Exception as e:
         raise Exception(f"Failed processing {file_path}: {e}")
@@ -141,12 +162,14 @@ async def process_push(payload: dict):
         # Extract author and message specific to THIS commit
         commit_message = commit.get("message", "No commit message")
         commit_author = commit.get("author", {}).get("name", "Unknown Author")
+        commit_sha = commit.get("id")          
+        commit_time = commit.get("timestamp")
         # Extract the lists
         mod_add = commit.get("modified",[]) + commit.get("added",[])
         removed = commit.get("removed",[])
         results = await asyncio.gather(
-            asyncio.gather(*(add_mod_single_file(owner, repo_name, repo_url, commit_message, commit_author, file_path) for file_path in mod_add if file_path.endswith(".py")), return_exceptions= True),
-            asyncio.gather(*(remove_single_file(repo_url, file_path) for file_path in removed), return_exceptions=True),
+            asyncio.gather(*(add_mod_single_file(owner, repo_name, repo_url, commit_message, commit_author, file_path, commit_sha, commit_time) for file_path in mod_add if file_path.endswith(".py")), return_exceptions= True),
+            asyncio.gather(*(remove_single_file(repo_url, file_path, commit_sha, commit_time) for file_path in removed), return_exceptions=True),
             return_exceptions=True
         )
         for process in results:
