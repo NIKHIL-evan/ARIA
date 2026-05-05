@@ -16,14 +16,29 @@
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
 
-[04/24/26 11:12:07] INFO     Starting MCP server                transport.py:301
+[04/26/26 04:19:22] INFO     Starting MCP server                transport.py:301
                              'aria-context-server' with                         
                              transport 'streamable-http' on                     
                              http://0.0.0.0:8001/mcp                            
-INFO:     Started server process [1172]
+INFO:     Started server process [11735]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
+INFO:     160.79.106.37:0 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     160.79.106.37:0 - "POST /mcp HTTP/1.1" 202 Accepted
+INFO:     160.79.106.37:0 - "GET /mcp HTTP/1.1" 200 OK
+INFO:     160.79.106.37:0 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     160.79.106.37:0 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     160.79.106.37:0 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     160.79.106.35:0 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     160.79.106.35:0 - "POST /mcp HTTP/1.1" 202 Accepted
+INFO:     160.79.106.35:0 - "GET /mcp HTTP/1.1" 200 OK
+INFO:     160.79.106.35:0 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     160.79.106.35:0 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     160.79.106.35:0 - "GET /mcp HTTP/1.1" 200 OK
+INFO:     160.79.106.37:0 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     160.79.106.37:0 - "GET /mcp HTTP/1.1" 200 OK
+INFO:     160.79.106.38:0 - "POST /mcp HTTP/1.1" 200 OK
 INFO:     160.79.106.35:0 - "POST /mcp HTTP/1.1" 200 OK
 INFO:     160.79.106.35:0 - "POST /mcp HTTP/1.1" 202 Accepted
 INFO:     160.79.106.35:0 - "GET /mcp HTTP/1.1" 200 OK
@@ -31,25 +46,9 @@ INFO:     160.79.106.35:0 - "POST /mcp HTTP/1.1" 200 OK
 INFO:     160.79.106.35:0 - "POST /mcp HTTP/1.1" 200 OK
 INFO:     160.79.106.35:0 - "POST /mcp HTTP/1.1" 200 OK
 INFO:     160.79.106.35:0 - "POST /mcp HTTP/1.1" 200 OK
+INFO:     160.79.106.35:0 - "GET /mcp HTTP/1.1" 200 OK
+INFO:     160.79.106.35:0 - "POST /mcp HTTP/1.1" 200 OK
 INFO:     160.79.106.37:0 - "POST /mcp HTTP/1.1" 202 Accepted
-INFO:     160.79.106.37:0 - "GET /mcp HTTP/1.1" 200 OK
-INFO:     160.79.106.37:0 - "POST /mcp HTTP/1.1" 200 OK
-INFO:     160.79.106.37:0 - "POST /mcp HTTP/1.1" 200 OK
-INFO:     160.79.106.37:0 - "GET /mcp HTTP/1.1" 200 OK
-INFO:     160.79.106.35:0 - "POST /mcp HTTP/1.1" 200 OK
 INFO:     160.79.106.35:0 - "GET /mcp HTTP/1.1" 200 OK
 INFO:     160.79.106.35:0 - "POST /mcp HTTP/1.1" 200 OK
-INFO:     160.79.106.37:0 - "GET /mcp HTTP/1.1" 200 OK
-INFO:     160.79.106.35:0 - "POST /mcp HTTP/1.1" 200 OK
-INFO:     160.79.106.35:0 - "GET /mcp HTTP/1.1" 200 OK
 INFO:     160.79.106.37:0 - "POST /mcp HTTP/1.1" 200 OK
-INFO:     160.79.106.37:0 - "GET /mcp HTTP/1.1" 200 OK
-INFO:     160.79.106.37:0 - "POST /mcp HTTP/1.1" 200 OK
-INFO:     160.79.106.37:0 - "GET /mcp HTTP/1.1" 200 OK
-INFO:     160.79.106.35:0 - "POST /mcp HTTP/1.1" 200 OK
-INFO:     160.79.106.37:0 - "GET /mcp HTTP/1.1" 200 OK
-INFO:     160.79.106.37:0 - "POST /mcp HTTP/1.1" 200 OK
-INFO:     160.79.106.37:0 - "GET /mcp HTTP/1.1" 200 OK
-INFO:     160.79.106.35:0 - "POST /mcp HTTP/1.1" 200 OK
-INFO:     160.79.106.35:0 - "GET /mcp HTTP/1.1" 200 OK
-INFO:     160.79.106.35:0 - "POST /mcp HTTP/1.1" 200 OK

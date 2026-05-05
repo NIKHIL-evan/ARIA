@@ -10,6 +10,7 @@ from aria.memory.qdrant_store import QdrantStore
 from aria.memory.syncmanager import SyncManager
 from aria.memory.embedder import Embedder
 from aria.memory.graph_writer import Neo4jManager 
+from aria.agents.watch.pr_graph_builder import build_pr_graph
 
 load_dotenv()
 
@@ -181,24 +182,29 @@ async def process_push(payload: dict):
 
 
 async def process_pull_request(payload: dict):
-    """Handles the Code Review Agent logic (Phase 2)."""
-    action = payload["action"]
-    pull_number = payload["pull_request"]["number"]
+    pr_number = payload["pull_request"]["number"]
+    base_sha = payload["pull_request"]["base"]["sha"]
+    head_sha = payload["pull_request"]["head"]["sha"]
     owner = payload["repository"]["owner"]["login"]
     repo_name = payload["repository"]["name"]
+    repo_url = payload["repository"]["html_url"]
     
-    if action in ["opened", "synchronize"]:
-        files = await asyncio.to_thread(diplomat.get_pr_files, owner, repo_name, pull_number)
-        for file in files:
-            path = file["filename"]
-            status = file["status"]
-            patch = file.get("patch", "")
-            
-            if status == "removed" or not path.endswith(".py"):
-                continue
-                
-            print(f"\n[PR #{pull_number}] File: {path}")
-            print(f"Patch data:\n{patch}")
+    # Step 1: Build the PR graph in Neo4j
+    await build_pr_graph(owner, repo_name, repo_url, pr_number, head_sha)
+    
+    # Step 2: Run analysis
+    drift_report = diff_engine.compute_drift(
+        repo_url, base_sha, head_sha)
+    
+    # Step 3: Investigate critical findings (agents)
+    verified = await orchestrator.investigate(drift_report)
+    
+    # Step 4: Post comment
+    comment = reporter.format_report(drift_report, verified)
+    publisher.post_comment(owner, repo_name, pr_number, comment)
+    
+    # Step 5: Clean up PR edges
+    neo4j_manager.rollback_commit(repo_url, head_sha)
 
 # THE FASTAPI ROUTER
 

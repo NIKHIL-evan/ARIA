@@ -1,4 +1,5 @@
-INFO:     Started server process [14837]
+INFO:     Started server process [44995]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     140.82.115.53:0 - "POST /webhook HTTP/1.1" 200 OK

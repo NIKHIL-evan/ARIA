@@ -50,7 +50,7 @@ class GitHubClient:
             
         return token_response.json()['token']
     
-    def get_file_content(self, owner: str, repo: str, file_path: str) -> str:
+    def get_file_content(self, owner: str, repo: str, file_path: str, ref=None) -> str:
         """Downloads the raw text of a specific file."""
         token = self.get_installation_token(owner, repo)
         headers = {
@@ -59,6 +59,9 @@ class GitHubClient:
         }
         
         url = f"https://api.github.com/repos/{owner}/{repo}/contents/{file_path}"
+        if ref:
+            url += f"?ref={ref}"
+            
         response = requests.get(url, headers=headers)
         
         if response.status_code == 200:
